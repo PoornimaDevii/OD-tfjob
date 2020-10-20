@@ -1,0 +1,72 @@
+apiVersion: "kubeflow.org/v1"
+kind: "TFJob"
+metadata:
+  name: "distributed-training4"
+  namespace: "kubeflow"
+spec:
+  cleanPodPolicy: None
+  tfReplicaSpecs:
+    Worker:
+      replicas: 1
+      restartPolicy: Never
+      template:
+        metadata:
+              annotations:
+                scheduling.k8s.io/group-name: "distributed-training4"
+        spec:
+          containers:
+            - name: tensorflow
+              image: docker.io/poornimadevii/darknet_tfjob:v37
+              volumeMounts:
+                - mountPath: /mnt
+                  name: training
+              resources:
+                limits:
+                  nvidia.com/gpu: 1
+          volumes:
+            - name: training
+              persistentVolumeClaim:
+                claimName: nfs
+    Chief:
+      replicas: 1
+      restartPolicy: Never
+      template:
+        metadata:
+              annotations:
+                scheduling.k8s.io/group-name: "distributed-training4"
+        spec:
+          containers:
+            - name: tensorflow
+              image: docker.io/poornimadevii/darknet_tfjob:v37
+              volumeMounts:
+                - mountPath: /mnt
+                  name: training
+              resources:
+                limits:
+                  nvidia.com/gpu: 1
+          volumes:
+            - name: training
+              persistentVolumeClaim:
+                claimName: nfs
+    PS:
+      replicas: 1
+      restartPolicy: Never
+      template:
+        metadata:
+              annotations:
+                scheduling.k8s.io/group-name: "distributed-training4"
+        spec:
+          containers:
+            - name: tensorflow
+              image: docker.io/poornimadevii/darknet_tfjob:v37
+              volumeMounts:
+                - mountPath: /mnt
+                  name: training
+              resources:
+                limits:
+                  nvidia.com/gpu: 1
+          volumes:
+            - name: training
+              persistentVolumeClaim:
+                claimName: nfs       
+         
