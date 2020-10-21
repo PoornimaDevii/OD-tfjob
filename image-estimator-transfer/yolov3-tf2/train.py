@@ -52,7 +52,7 @@ flags.DEFINE_enum('mode', 'fit', ['fit', 'eager_fit', 'eager_tf'],
                                   'fit: model.fit, '
                                   'eager_fit: model.fit(run_eagerly=True), '
                                   'eager_tf: custom GradientTape')
-flags.DEFINE_enum('transfer', 'none',
+flags.DEFINE_enum('transfer', 'frozen',
                                   ['none', 'darknet', 'no_output', 'frozen', 'fine_tune'],
                                   'none: Training from scratch, '
                                   'darknet: Transfer darknet, '
@@ -60,23 +60,23 @@ flags.DEFINE_enum('transfer', 'none',
                                   'frozen: Transfer and freeze all, '
                                   'fine_tune: Transfer all and freeze darknet only')
 flags.DEFINE_integer('size', 416, 'image size')
-flags.DEFINE_integer('epochs', 3, 'number of epochs')
+flags.DEFINE_integer('epochs', 10, 'number of epochs')
 flags.DEFINE_integer('batch_size', 32, 'batch size')
-flags.DEFINE_float('learning_rate', 1e-3, 'learning rate')
+flags.DEFINE_float('learning_rate', 1e-5, 'learning rate')
 flags.DEFINE_integer('num_classes', 20, 'number of classes in the model')
 flags.DEFINE_integer('weights_num_classes', None, 'specify num class for `weights` file if different, '
                                          'useful in transfer learning with different number of classes')
-flags.DEFINE_string('model_dir', '/mnt/estim_trained_model11/.', 'path to saved model')
-                                         
+flags.DEFINE_string('model_dir', '/mnt/estim_pretrained/.', 'path to saved model')
+
 #tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.INFO)
 
 def input_fn():
 
        #BUFFER_SIZE = 10000
-       
+
         anchors = yolo_anchors
         anchor_masks = yolo_anchor_masks
-        
+
         if FLAGS.dataset:
                    train_dataset = dataset.load_tfrecord_dataset(
                                 FLAGS.dataset, FLAGS.classes, FLAGS.size)
@@ -85,13 +85,13 @@ def input_fn():
         train_dataset = train_dataset.shuffle(buffer_size=1000)
         train_dataset = train_dataset.repeat(FLAGS.epochs)
         train_dataset = train_dataset.batch(FLAGS.batch_size)
-        
+
         return train_dataset.map(lambda x, y: (dataset.transform_images(x, FLAGS.size),
             dataset.transform_targets(y, anchors, anchor_masks, FLAGS.size)))
 
 def main(args):
   print('Using %s to store checkpoints.' %FLAGS.model_dir)
-  
+
   anchors = yolo_anchors
   anchor_masks = yolo_anchor_masks
 
@@ -103,31 +103,71 @@ def main(args):
   else:
            model = YoloV3(FLAGS.size, training=True, classes=FLAGS.num_classes)
            model.load_weights(FLAGS.weights)
-                
-                
-  optimizer = tf.keras.optimizers.Adam(lr=FLAGS.learning_rate)
+
+  # Configure the model for transfer learning
+  if FLAGS.transfer == 'none':
+        pass  # Nothing to do
+  elif FLAGS.transfer in ['darknet', 'no_output']:
+        # Darknet transfer is a special case that works
+        # with incompatible number of classes
+
+        # reset top layers
+        if FLAGS.tiny:
+            model_pretrained = YoloV3Tiny(
+                FLAGS.size, training=True, classes=FLAGS.weights_num_classes or FLAGS.num_classes)
+        else:
+            model_pretrained = YoloV3(
+                FLAGS.size, training=True, classes=FLAGS.weights_num_classes or FLAGS.num_classes)
+        model_pretrained.load_weights(FLAGS.weights)
+
+        if FLAGS.transfer == 'darknet':
+            model.get_layer('yolo_darknet').set_weights(
+                model_pretrained.get_layer('yolo_darknet').get_weights())
+            freeze_all(model.get_layer('yolo_darknet'))
+            
+        elif FLAGS.transfer == 'no_output':
+                for l in model.layers:
+                    if not l.name.startswith('yolo_output'):
+                        l.set_weights(model_pretrained.get_layer(
+                            l.name).get_weights())
+                        freeze_all(l)
+
+  else:
+        # All other transfer require matching classes
+        model.load_weights(FLAGS.weights)
+        if FLAGS.transfer == 'fine_tune':
+            print("*****************fine tune block***********")
+            # freeze darknet and fine tune other layers
+            darknet = model.get_layer('yolo_darknet')
+            freeze_all(darknet)
+        elif FLAGS.transfer == 'frozen':
+            # freeze everything
+            freeze_all(model)
+
+
+  optimizer = tf.keras.optimizers.Adam(lr=tf.Variable(FLAGS.learning_rate))
   loss = [YoloLoss(anchors[mask], classes=FLAGS.num_classes)
                                         for mask in anchor_masks]
 
   model.save_weights(
                 '/mnt/checkpoints11/yolov3_train_neww.tf')
-                                        
+
   model.summary()
-                                        
+
   model.compile(optimizer=optimizer, loss=loss,
                              run_eagerly=(FLAGS.mode == 'eager_fit'))
-                             
-                                     
+
+
   # Define DistributionStrategies and convert the Keras Model to an
   # Estimator that utilizes these DistributionStrateges.
   # Evaluator is a single worker, so using MirroredStrategy.
-  
+
   config = tf.estimator.RunConfig(
          train_distribute=tf.distribute.experimental.ParameterServerStrategy(),
          eval_distribute=tf.distribute.MirroredStrategy())
-  
+
   keras_estimator = tf.keras.estimator.model_to_estimator(
-      keras_model=model, config=config, model_dir=FLAGS.model_dir)
+      keras_model=model, config=config, model_dir=FLAGS.model_dir,checkpoint_format='saver')
 
   # Train and evaluate the model. Evaluation will be skipped if there is not an
   # "evaluator" job in the cluster.
